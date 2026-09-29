@@ -509,7 +509,8 @@ class DataPartitioner(object):
 def partition_trainDataset(dataset_name, data_dir, skew, seed, batch_size,
                         num_classes, noise_rate=0.0, noise_agents=None,
                         quality_mode: str = "uniform", quality_profiles: list = None,
-                        noise_type: str = "uniform", noise_alpha: float = 0.1):
+                        noise_type: str = "uniform", noise_alpha: float = 0.1,
+                        noise_profile: dict = None):
     if dataset_name== 'cifar10':
         normalize   = transforms.Normalize(mean=[0.4914, 0.4822, 0.4465],
                                      std=[0.2023, 0.1994, 0.2010])
@@ -610,7 +611,9 @@ def partition_trainDataset(dataset_name, data_dir, skew, seed, batch_size,
         )
     prof = quality_profiles[rank]
 
-    if noise_rate > 0.0 and (not noise_agents or rank in noise_agents):
+    if noise_profile is not None and rank in noise_profile:
+        prof = dict(prof, label_noise_rate=noise_profile[rank])
+    elif noise_rate > 0.0 and (not noise_agents or rank in noise_agents):
         prof = dict(prof, label_noise_rate=noise_rate)
 
     corruption = CorruptionTransform(

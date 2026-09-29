@@ -59,8 +59,11 @@ class GraphManager(object):
         raise NotImplementedError
 
     def _add_peers(self, rank, peers):
+        existing_dests = {edge.dest for edge in self.phone_book[rank]}
         for peer in peers:
-            if peer not in self.phone_book[rank]:
+            dest = peer * self.nprocs_per_node
+            if dest not in existing_dests:
+                existing_dests.add(dest)
                 self.phone_book[rank].append(Edge(
                     local_master_rank=(self.rank * self.nprocs_per_node),
                     dest=(peer * self.nprocs_per_node),

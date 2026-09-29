@@ -111,6 +111,10 @@ parser.add_argument('--noise-type', dest='noise_type', default='uniform', type=s
 parser.add_argument('--noise-alpha', dest='noise_alpha', default=0.1, type=float,
                     help='Dirichlet concentration for label noise: '
                          'small (0.01) = near pair-flip; large (10) = near uniform')
+parser.add_argument('--noise-profile', dest='noise_profile', default='', type=str,
+                    help='per-agent label noise rate override as "rank:rate,rank:rate,...", '
+                         'e.g. "1:0.05,2:0.2,3:0.2,4:0.2" (ranks not listed keep rate 0). '
+                         'Takes priority over --noise-rate/--noise-agents when set.')
 args = parser.parse_args()
 args.devices = torch.cuda.device_count()
 
@@ -197,6 +201,10 @@ def run(rank, size):
         noise_agents={int(x) for x in args.noise_agents.split(',') if x.strip()} if args.noise_agents else set(),
         noise_type=args.noise_type,
         noise_alpha=args.noise_alpha,
+        noise_profile={
+            int(pair.split(':')[0]): float(pair.split(':')[1])
+            for pair in args.noise_profile.split(',') if pair.strip()
+        } if args.noise_profile else None,
     )
 
     if rank == 0:
