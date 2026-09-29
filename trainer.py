@@ -437,10 +437,10 @@ def run(rank, size):
             vals = [ep[r] for ep in window if r in ep]
             if not vals:
                 continue
-            unc_cor = sum(v['uncertainty_correct'] for v in vals) / len(vals)
-            unc_wr  = sum(v['uncertainty_wrong']  for v in vals) / len(vals)
-            w_cor   = sum(v['weight_corect']   for v in vals) / len(vals)
-            w_wr    = sum(v['weight_wrong']    for v in vals) / len(vals)
+            unc_cor = sum(v['uncertainty_correct_pred'] for v in vals) / len(vals)
+            unc_wr  = sum(v['uncertainty_wrong_pred']  for v in vals) / len(vals)
+            w_cor   = sum(v['weight_correct_pred']   for v in vals) / len(vals)
+            w_wr    = sum(v['weight_wrong_pred']    for v in vals) / len(vals)
             d_unc   = unc_wr - unc_cor
             d_w     = w_wr   - w_cor
             passed  = (d_unc > 0) and (d_w < 0)

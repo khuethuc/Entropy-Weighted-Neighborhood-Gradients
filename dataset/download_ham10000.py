@@ -1,13 +1,15 @@
 """
-URL: https://isic-archive.s3.amazonaws.com/images/<ISIC_ID>.jpg
-Commands: python3.12 dataset/download_ham10000.py --out ../data/ham10000
+Downloads HAM10000 (ISIC Archive collection 212) via the ISIC Archive REST
+API v2, which returns paginated JSON (id + image URL + diagnosis metadata)
+directly -- no separate metadata endpoint or HTML scraping needed.
+
+Commands: python3 dataset/download_ham10000.py --out ../data/ham10000
 """
 
 from __future__ import annotations
 
 import argparse
-import os
-import re
+import csv
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -15,76 +17,58 @@ from typing import Iterable
 import requests
 from tqdm import tqdm
 
-COLLECTION_URL = "https://api.isic-archive.com/collections/212/"
-S3_IMAGE_URL = "https://isic-archive.s3.amazonaws.com/images/{isic_id}.jpg"
-
-METADATA_CANDIDATES = [
-    "https://api.isic-archive.com/collections/212/metadata/",
-    "https://api.isic-archive.com/collections/212/metadata",
-    "https://api.isic-archive.com/collections/212/metadata/?format=csv",
-    "https://api.isic-archive.com/collections/212/metadata?format=csv",
-]
-
-ISIC_ID_RE = re.compile(r"\bISIC_\d{7}\b")
-NEXT_HREF_RE = re.compile(r'href="([^"]*cursor=[^"]*)"[^>]*>\s*next\s*<', re.IGNORECASE)
+SEARCH_URL = "https://api.isic-archive.com/api/v2/images/search/?collections=212&limit=100"
 
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Download HAM10000 from ISIC Archive (no Kaggle).")
+    ap = argparse.ArgumentParser(description="Download HAM10000 from the ISIC Archive REST API v2.")
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-images", type=int, default=0)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--resume", action="store_true")
-    ap.add_argument("--no-metadata", action="store_true")
-    ap.add_argument("--user-agent", default="ham10000-downloader/1.0")
+    ap.add_argument("--user-agent", default="ham10000-downloader/2.0")
     return ap.parse_args()
 
 
 def session(user_agent: str) -> requests.Session:
     s = requests.Session()
-    s.headers.update({"User-Agent": user_agent})
+    s.headers.update({"User-Agent": user_agent, "Accept": "application/json"})
     return s
 
 
-def fetch_text(s: requests.Session, url: str, timeout: int) -> str:
-    r = s.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.text
+def fetch_records(s: requests.Session, max_images: int, timeout: int) -> list[dict]:
+    """Page through the ISIC v2 search API, collecting id/url/diagnosis per image."""
+    url = SEARCH_URL
+    records: list[dict] = []
+    pbar = tqdm(total=(max_images if max_images > 0 else None), desc="Fetching metadata", unit="img")
 
+    while url:
+        r = s.get(url, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
 
-def crawl_isic_ids(s: requests.Session, max_images: int, timeout: int) -> list[str]:
-    url = COLLECTION_URL
-    seen = set()
-    out: list[str] = []
+        for item in data.get("results", []):
+            clinical = item.get("metadata", {}).get("clinical", {})
+            full_url = item.get("files", {}).get("full", {}).get("url")
+            if not full_url:
+                continue
+            records.append({
+                "isic_id": item["isic_id"],
+                "url": full_url,
+                "diagnosis_1": clinical.get("diagnosis_1", ""),
+                "diagnosis_2": clinical.get("diagnosis_2", ""),
+                "diagnosis_3": clinical.get("diagnosis_3", ""),
+            })
+            pbar.update(1)
+            if max_images > 0 and len(records) >= max_images:
+                pbar.close()
+                return records
 
-    pbar = tqdm(total=(max_images if max_images > 0 else None), desc="Crawling IDs", unit="img")
-
-    while True:
-        html = fetch_text(s, url, timeout=timeout)
-
-        ids = ISIC_ID_RE.findall(html)
-        for isic_id in ids:
-            if isic_id not in seen:
-                seen.add(isic_id)
-                out.append(isic_id)
-                pbar.update(1)
-                if max_images > 0 and len(out) >= max_images:
-                    pbar.close()
-                    return out
-
-        m = NEXT_HREF_RE.search(html)
-        if not m:
-            break
-
-        next_href = m.group(1)
-        if next_href.startswith("http"):
-            url = next_href
-        else:
-            url = "https://api.isic-archive.com" + next_href
+        url = data.get("next")
 
     pbar.close()
-    return out
+    return records
 
 
 def download_file(s: requests.Session, url: str, dst: Path, timeout: int) -> None:
@@ -97,31 +81,10 @@ def download_file(s: requests.Session, url: str, dst: Path, timeout: int) -> Non
                     f.write(chunk)
 
 
-def try_download_metadata(s: requests.Session, out_dir: Path, timeout: int) -> Path | None:
-    out_path = out_dir / "isic_ham10000_metadata.csv"
-    headers = {"Accept": "text/csv,application/octet-stream,*/*"}
-
-    for url in METADATA_CANDIDATES:
-        try:
-            r = s.get(url, headers=headers, timeout=timeout)
-            if r.status_code != 200:
-                continue
-            ct = (r.headers.get("Content-Type") or "").lower()
-            if ("text/csv" not in ct) and ("csv" not in r.text[:200].lower()):
-                # tránh lưu nhầm HTML
-                continue
-            out_path.write_bytes(r.content)
-            return out_path
-        except Exception:
-            continue
-    return None
-
-
-def iter_jobs(isic_ids: Iterable[str], images_dir: Path) -> Iterable[tuple[str, str, Path]]:
-    for isic_id in isic_ids:
-        url = S3_IMAGE_URL.format(isic_id=isic_id)
-        dst = images_dir / f"{isic_id}.jpg"
-        yield isic_id, url, dst
+def iter_jobs(records: list[dict], images_dir: Path) -> Iterable[tuple[str, str, Path]]:
+    for rec in records:
+        dst = images_dir / f"{rec['isic_id']}.jpg"
+        yield rec["isic_id"], rec["url"], dst
 
 
 def main() -> int:
@@ -133,36 +96,34 @@ def main() -> int:
 
     s = session(args.user_agent)
 
-    # Step 1: Crawl ID list
+    # Step 1: page through the search API -- id, image URL and diagnosis all
+    # come back in the same JSON response, so this replaces both the old
+    # HTML-crawl step and the separate metadata-download step.
     try:
-        isic_ids = crawl_isic_ids(s, max_images=args.max_images, timeout=args.timeout)
+        records = fetch_records(s, max_images=args.max_images, timeout=args.timeout)
     except Exception as e:
-        print(f"[ERROR] Crawl IDs fail: {e}", file=sys.stderr)
+        print(f"[ERROR] Fetching metadata failed: {e}", file=sys.stderr)
         return 1
 
-    if not isic_ids:
-        print("[ERROR] Cannot crawl ISIC_ID", file=sys.stderr)
+    if not records:
+        print("[ERROR] No records returned from the ISIC API", file=sys.stderr)
         return 1
 
-    (out_dir / "isic_ids.txt").write_text("\n".join(isic_ids) + "\n", encoding="utf-8")
-    print(f"[INFO] Total get ID: {len(isic_ids)} (saved isic_ids.txt)")
+    print(f"[INFO] Total records fetched: {len(records)}")
 
-    # Step 2: Download metadata (optional)
-    if not args.no_metadata:
-        meta_path = try_download_metadata(s, out_dir=out_dir, timeout=args.timeout)
-        if meta_path is None:
-            print("[WARN] Cannot download metadata through auto endpoint")
-        else:
-            print(f"[INFO] Saved metadata: {meta_path}")
+    # Step 2: write metadata CSV (columns dataloader.py's _extract_ids_labels expects)
+    meta_path = out_dir / "isic_ham10000_metadata.csv"
+    with open(meta_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["isic_id", "diagnosis_1", "diagnosis_2", "diagnosis_3"])
+        writer.writeheader()
+        for rec in records:
+            writer.writerow({k: rec[k] for k in ["isic_id", "diagnosis_1", "diagnosis_2", "diagnosis_3"]})
+    print(f"[INFO] Saved metadata: {meta_path}")
 
-    # Step 3: Download parallel
-    jobs = list(iter_jobs(isic_ids, images_dir))
-    to_download = []
+    # Step 3: download images in parallel
+    jobs = list(iter_jobs(records, images_dir))
     if args.resume:
-        for isic_id, url, dst in jobs:
-            if dst.exists() and dst.stat().st_size > 0:
-                continue
-            to_download.append((isic_id, url, dst))
+        to_download = [j for j in jobs if not (j[2].exists() and j[2].stat().st_size > 0)]
     else:
         to_download = jobs
 
@@ -179,7 +140,7 @@ def main() -> int:
             isic_id, url, dst = future_map[fut]
             try:
                 fut.result()
-            except Exception as e:
+            except Exception:
                 failures.append(isic_id)
                 try:
                     if dst.exists():
@@ -189,7 +150,7 @@ def main() -> int:
 
     if failures:
         (out_dir / "failed_ids.txt").write_text("\n".join(failures) + "\n", encoding="utf-8")
-        print(f"[WARN] Error {len(failures)} images. List is saved at failed_ids.txt")
+        print(f"[WARN] Error downloading {len(failures)} images. List saved at failed_ids.txt")
     else:
         print("[DONE] Download HAM10000 successfully.")
 

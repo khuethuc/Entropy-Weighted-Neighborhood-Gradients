@@ -45,7 +45,7 @@ run_exp () {
     for attempt in 1 2 3; do
         echo "[$(date '+%F %T')] START $tag (attempt $attempt/3)"
         if python trainer.py \
-            --data-dir "$DATA_DIR" --dataset "$dataset" --classes "$classes" \
+            --data-dir "$DATA_DIR/$dataset" --dataset "$dataset" --classes "$classes" \
             --lr 0.01 --batch-size 160 --world_size 5 --skew 1 --gamma 0.1 \
             --normtype evonorm --arch cganet --momentum 0.9 --alpha 1.0 --nesterov \
             --graph "$topology" "${neighbor_args[@]}" \

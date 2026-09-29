@@ -5,12 +5,16 @@
 # IMPORTANT: env.yml in the repo pins PyTorch 1.2.0 / CUDA 10.0 / Python 3.7.
 # That combination CANNOT run on modern GPUs (RTX 30/40-series, A100, etc.)
 # because their compute capability requires CUDA 11.8+/12.x driver support.
-# This script installs a MODERN stack instead (Python 3.11 + PyTorch cu121)
-# on the assumption that this is what was actually used to produce the
-# RTX 4090 results in the paper. The code itself uses no version-specific
+# This script installs a MODERN stack instead (system python3 + PyTorch
+# cu121) on the assumption that this is what was actually used to produce
+# the RTX 4090 results in the paper. The code itself uses no version-specific
 # APIs (plain torch.distributed + torch.multiprocessing.spawn), so this is
 # expected to be a safe substitution. If something fails, the 10-epoch test
-# script (01_test_single_run.sh) is exactly where you'll find out early.
+# script (test_single_run.sh) is exactly where you'll find out early.
+#
+# Uses whatever python3 the base image ships (e.g. 3.12 on Ubuntu 24.04
+# "noble" images) rather than pinning 3.11, since some Vast AI base images
+# don't carry python3.11 in their default apt repos.
 #
 # Run this once per pod, as the pod's default user (root is fine on Vast AI).
 # ============================================================================
@@ -24,10 +28,10 @@ VENV_DIR="$HOME/ngc_env"
 echo "[1/6] Installing system packages..."
 apt-get update -y
 apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3-pip git wget curl ca-certificates
+    python3 python3-venv python3-pip git wget curl ca-certificates
 
 echo "[2/6] Creating virtualenv at $VENV_DIR..."
-python3.11 -m venv "$VENV_DIR"
+python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
 
